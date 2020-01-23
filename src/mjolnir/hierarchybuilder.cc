@@ -12,7 +12,8 @@
 #include <string>
 #include <utility>
 #include <vector>
-
+#include <stdexcept>
+	
 #include "baldr/graphconstants.h"
 #include "baldr/graphid.h"
 #include "baldr/graphreader.h"
@@ -111,7 +112,17 @@ OldToNewNodes find_nodes(sequence<OldToNewNodes>& old_to_new, const GraphId& nod
 bool OpposingEdgeInfoMatches(const GraphTile* tile, const DirectedEdge* edge) {
   // Get the nodeinfo at the end of the edge. Iterate through the directed edges and return
   // true if a matching edgeinfo offset if found.
-  const NodeInfo* nodeinfo = tile->node(edge->endnode().id());
+  const  NodeInfo* nodeinfo;
+  try {
+    nodeinfo = tile->node(edge->endnode().id());
+  } catch(std::runtime_error e) {
+    LOG_ERROR(e.what());
+    return false;
+  }
+  if (nodeinfo == nullptr){
+    LOG_INFO("null ptr");
+    return false;
+  }
   const DirectedEdge* directededge = tile->directededge(nodeinfo->edge_index());
   for (uint32_t i = 0; i < nodeinfo->edge_count(); i++, directededge++) {
     // Return true if the edge info matches (same name, shape, etc.)

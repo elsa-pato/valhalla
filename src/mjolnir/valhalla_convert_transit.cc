@@ -1053,12 +1053,14 @@ void build_tiles(const boost::property_tree::ptree& pt,
       distances.push_back(distance);
       shape_data.begins = distances.size() - 1;
 
-      // loop through the points getting the distances.
-      for (size_t index = 0; index < trip_shape.size() - 1; ++index) {
-        PointLL p0 = trip_shape[index];
-        PointLL p1 = trip_shape[index + 1];
-        distance += p0.Distance(p1);
-        distances.push_back(distance);
+      if(trip_shape.size() > 0) {
+        // loop through the points getting the distances.
+        for (size_t index = 0; index < trip_shape.size() - 1; ++index) {
+          PointLL p0 = trip_shape[index];
+          PointLL p1 = trip_shape[index + 1];
+          distance += p0.Distance(p1);
+          distances.push_back(distance);
+        }
       }
       // must be distances.size for the end index as we use std::copy later on and want
       // to include the last element in the vector we wish to copy.

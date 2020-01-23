@@ -566,10 +566,13 @@ void GraphValidator::Validate(const boost::property_tree::ptree& pt) {
   std::mutex lock;
 
   // Setup threads
+  /*
   std::vector<std::shared_ptr<std::thread>> threads(
       std::max(static_cast<unsigned int>(1),
                pt.get<unsigned int>("concurrency", std::thread::hardware_concurrency())));
-
+  */
+ std::vector<std::shared_ptr<std::thread>> threads(6);
+  
   // Setup promises
   std::list<
       std::promise<std::tuple<std::vector<uint32_t>, std::vector<std::vector<float>>, tweeners_t>>>

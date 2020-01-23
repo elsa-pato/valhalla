@@ -98,7 +98,10 @@ struct pt_curler_t {
           bool threw = false;
           try {
             rapidjson::read_json(result, pt);
-          } catch (...) { threw = true; }
+          } catch (std::runtime_error const& err) {
+            threw = true;
+            log_extra = err.what();
+          }
           // has to parse and have required info
           if (!threw && (retry_if_no.empty() || pt.get_child_optional(retry_if_no))) {
             break;
@@ -108,9 +111,9 @@ struct pt_curler_t {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       // dont log rate limit stuff its too frequent
-      if (http_code != 429 || (tries % 10) == 0) {
-        LOG_WARN(log_extra + "retrying " + url);
-      }
+      // if (http_code != 429 || (tries % 10) == 0) {
+      LOG_WARN(log_extra + "retrying " + url);
+      //}
     };
     return pt;
   }
@@ -229,43 +232,65 @@ std::priority_queue<weighted_tile_t> which_tiles(const ptree& pt, const std::str
   auto* utc = gmtime(&now);
   utc->tm_year += 1900;
   ++utc->tm_mon;
+
+  float my_min_x, my_min_y, my_max_x, my_max_y;
+
+  if (transit_bounding_box != "") {
+    int pos1 = 6;
+    int pos2 = transit_bounding_box.find(",");
+    my_min_x = std::stof(transit_bounding_box.substr(pos1, pos2));
+    pos1 = pos2 + 1;
+    pos2 = transit_bounding_box.find(",", pos1);
+    my_min_y = std::stof(transit_bounding_box.substr(pos1, pos2));
+    pos1 = pos2 + 1;
+    pos2 = transit_bounding_box.find(",", pos1);
+    my_max_x = std::stof(transit_bounding_box.substr(pos1, pos2));
+    pos1 = pos2 + 1;
+    pos2 = transit_bounding_box.find(",", pos1);
+    my_max_y = std::stof(transit_bounding_box.substr(pos1, pos2));
+    LOG_INFO("Bounding box : " +
+             (boost::format("%1%,%2%,%3%,%4%") % my_min_x % my_min_y % my_max_x % my_max_y).str());
+  }
+
   for (const auto& tile : tiles) {
     auto bbox = tile_level.tiles.TileBounds(tile.tileid());
     auto min_y = std::max(bbox.miny(), bbox.minpt().MidPoint({bbox.maxx(), bbox.miny()}).second);
     auto max_y =
         std::min(bbox.maxy(), PointLL(bbox.minx(), bbox.maxy()).MidPoint(bbox.maxpt()).second);
     bbox = AABB2<PointLL>(bbox.minx(), min_y, bbox.maxx(), max_y);
-    // stop count
-    auto request =
-        url((boost::format("/api/v1/stop_stations?total=true&per_page=0&bbox=%1%,%2%,%3%,%4%") %
-             bbox.minx() % bbox.miny() % bbox.maxx() % bbox.maxy())
-                .str(),
-            pt);
-    request += import_level;
-
-    auto stations_total = curler(request, "meta.total").get<size_t>("meta.total");
-    /*
-    //route count
-    request = url((boost::format("/api/v1/routes?total=true&per_page=0&bbox=%1%,%2%,%3%,%4%")
-      % bbox.minx() % bbox.miny() % bbox.maxx() % bbox.maxy()).str(), pt);
-    auto routes_total = curler(request, "meta.total").get<size_t>("meta.total");
-    //pair count
-    request =
-    url((boost::format("/api/v1/schedule_stop_pairs?total=true&per_page=0&bbox=%1%,%2%,%3%,%4%&service_from_date=%5%-%6%-%7%")
-      % bbox.minx() % bbox.miny() % bbox.maxx() % bbox.maxy() % utc->tm_year % utc->tm_mon %
-    utc->tm_mday).str(), pt); auto pairs_total = curler(request,
-    "meta.total").get<size_t>("meta.total");
-    */
-    // we have anything we want it
-    if (stations_total > 0 /* || routes_total > 0|| pairs_total > 0*/) {
-      prioritized.push(
-          weighted_tile_t{tile,
-                          stations_total +
-                              10 /* + routes_total * 1000 + pairs_total*/}); // TODO: factor in stop
-                                                                             // pairs as well
-      LOG_INFO(GraphTile::FileSuffix(tile) + " should have " + std::to_string(stations_total) +
-               " stations " /* +
-          std::to_string(routes_total) +  " routes and " + std::to_string(pairs_total) +  " stop_pairs"*/);
+    // stop count restricted to tiles overlapping the bounding box
+    if (transit_bounding_box == "" || (!(bbox.minx() >= my_max_x || my_min_x >= bbox.maxx()) &&
+                                       !(bbox.miny() >= my_max_y || my_min_y >= bbox.maxy()))) {
+      auto request = url((boost::format("/api/v1/stop_stations?total=true&bbox=%1%,%2%,%3%,%4%") %
+                          bbox.minx() % bbox.miny() % bbox.maxx() % bbox.maxy())
+                             .str(),
+                         pt);
+      request += import_level;
+      auto stations_total = curler(request, "meta.total").get<size_t>("meta.total");
+      LOG_INFO(request);
+      /*
+      //route count
+      request = url((boost::format("/api/v1/routes?total=true&per_page=0&bbox=%1%,%2%,%3%,%4%")
+        % bbox.minx() % bbox.miny() % bbox.maxx() % bbox.maxy()).str(), pt);
+      auto routes_total = curler(request, "meta.total").get<size_t>("meta.total");
+      //pair count
+      request =
+      url((boost::format("/api/v1/schedule_stop_pairs?total=true&per_page=0&bbox=%1%,%2%,%3%,%4%&service_from_date=%5%-%6%-%7%")
+        % bbox.minx() % bbox.miny() % bbox.maxx() % bbox.maxy() % utc->tm_year % utc->tm_mon %
+      utc->tm_mday).str(), pt); auto pairs_total = curler(request,
+      "meta.total").get<size_t>("meta.total");
+      */
+      // we have anything we want it
+      if (stations_total > 0 /* || routes_total > 0|| pairs_total > 0*/) {
+        prioritized.push(
+            weighted_tile_t{tile,
+                            stations_total +
+                                10 /* + routes_total * 1000 + pairs_total*/}); // TODO: factor in stop
+                                                                               // pairs as well
+        LOG_INFO(GraphTile::FileSuffix(tile) + " should have " + std::to_string(stations_total) +
+                " stations " /* +
+            std::to_string(routes_total) +  " routes and " + std::to_string(pairs_total) +  " stop_pairs"*/);
+      }
     }
   }
   LOG_INFO("Finished with " + std::to_string(prioritized.size()) + " transit tiles in " +
@@ -286,7 +311,6 @@ void get_stop_stations(Transit& tile,
                        const GraphId& tile_id,
                        const ptree& response,
                        const AABB2<PointLL>& filter,
-                       bool tile_within_one_tz,
                        const std::unordered_multimap<uint32_t, multi_polygon_type>& tz_polys) {
 
   for (const auto& station_pt : response.get_child("stop_stations")) {
@@ -488,15 +512,63 @@ void get_stop_patterns(Transit& tile,
                        std::unordered_map<std::string, size_t>& shapes,
                        const ptree& response) {
   for (const auto& shape_pt : response.get_child("route_stop_patterns")) {
+    LOG_INFO("get_stop_patterns ok1");
     auto* shape = tile.add_shapes();
     auto shape_id = shape_pt.second.get<std::string>("onestop_id");
 
     std::vector<PointLL> trip_shape;
     for (const auto& geom : shape_pt.second.get_child("geometry.coordinates")) {
-      auto lon = geom.second.front().second.get_value<float>();
-      auto lat = geom.second.back().second.get_value<float>();
-      trip_shape.emplace_back(PointLL(lon, lat));
+      LOG_INFO("get_stp_patterns for begin ");
+      /*
+      if (geom.second == NULL) {
+        LOG_INFO("get_stp_patterns geom null ");
+        continue;
+      }
+      if (geom.second.front() || geom.second.front().second == NULL) {
+        LOG_INFO("get_stp_patterns front null ");
+        continue;
+      }
+      if (geom.second.back() == NULL || geom.second.back().second == NULL) {
+        LOG_INFO("get_stp_patterns back null ");
+        continue;
+      }
+      */
+      try {
+        if (true) {
+          LOG_INFO("a");
+          auto geomsecond = geom.second;
+          LOG_INFO("b1");
+          if (!geomsecond.empty()) {
+            LOG_INFO("b");
+            auto front = geomsecond.front();
+            LOG_INFO("c1");
+            if (true) {
+              LOG_INFO("c");
+              auto frontsecond = front.second;
+              LOG_INFO("d1");
+              if (!frontsecond.empty()) {
+                LOG_INFO("d");
+                auto lon = frontsecond.get_value<float>();
+                LOG_INFO("intermed 1");
+                auto lat = geom.second.back().second.get_value<float>();
+                LOG_INFO("intermed 2");
+                trip_shape.emplace_back(PointLL(lon, lat));
+              } else {
+                LOG_INFO("w");
+              }
+            } else {
+              LOG_INFO("x");
+            }
+          } else {
+            LOG_INFO("y");
+          }
+        } else {
+          LOG_INFO("z");
+        }
+      } catch (std::exception& e) { LOG_ERROR(e.what()); }
+      LOG_INFO("get_stp_patterns for end ");
     }
+    LOG_INFO("get_stop_patterns ok1");
     if (trip_shape.size() > 1) {
       // encode the points to reduce size
       shape->set_encoded_shape(encode7(trip_shape));
@@ -504,6 +576,7 @@ void get_stop_patterns(Transit& tile,
       // shapes.size()+1 because we can't have a shape id of 0.
       // 0 means shape id is not set in the transit builder.
       shape->set_shape_id(shapes.size() + 1);
+      LOG_INFO("get_stop_patterns ok4");
       shapes.emplace(shape_id, shape->shape_id());
     }
   }
@@ -737,6 +810,7 @@ void fetch_tiles(const ptree& pt,
 
   // for each tile
   while (true) {
+    LOG_INFO("enter while");
     GraphId current;
     uniques.lock.lock();
     if (queue.empty()) {
@@ -761,6 +835,7 @@ void fetch_tiles(const ptree& pt,
     auto import_level = pt.get_optional<std::string>("import_level")
                             ? "&import_level=" + pt.get<std::string>("import_level")
                             : "";
+    LOG_INFO("ok1");
 
     Transit tile;
     auto file_name = GraphTile::FileSuffix(current);
@@ -772,6 +847,7 @@ void fetch_tiles(const ptree& pt,
     uint32_t ext = 0;
     std::string prefix = transit_tile.string();
     LOG_INFO("Fetching " + transit_tile.string());
+    LOG_INFO("ok2");
 
     bool tile_within_one_tz = false;
     std::unordered_multimap<uint32_t, multi_polygon_type> tz_polys;
@@ -781,6 +857,7 @@ void fetch_tiles(const ptree& pt,
         tile_within_one_tz = true;
       }
     }
+    LOG_INFO("ok3");
 
     // all the nodes...stations, platforms, and egresses
     std::unordered_map<std::string, uint64_t> nodes;
@@ -792,13 +869,14 @@ void fetch_tiles(const ptree& pt,
                 .str(),
             pt);
     request = *request + import_level;
+    LOG_INFO(request.value());
+    LOG_INFO("ok4");
 
     do {
       // grab some stuff
       response = curler(*request, "stop_stations");
       // copy stops in, keeping map of stopid to graphid
-      get_stop_stations(tile, nodes, platforms, current, response, filter, tile_within_one_tz,
-                        tz_polys);
+      get_stop_stations(tile, nodes, platforms, current, response, filter, tz_polys);
       // please sir may i have some more?
       request = response.get_optional<std::string>("meta.next");
 
@@ -808,6 +886,7 @@ void fetch_tiles(const ptree& pt,
       LOG_WARN(transit_tile.string() + " had no stops and will not be stored");
       continue;
     }
+    LOG_INFO("ok5");
 
     // pull out all operator WEBSITES
     request =
@@ -816,6 +895,7 @@ void fetch_tiles(const ptree& pt,
                 .str(),
             pt);
     request = *request + import_level;
+    LOG_INFO("ok6");
 
     std::unordered_map<std::string, std::string> websites;
     std::unordered_map<std::string, std::string> short_names;
@@ -839,6 +919,7 @@ void fetch_tiles(const ptree& pt,
       // please sir may i have some more?
       request = response.get_optional<std::string>("meta.next");
     } while (request && (request = *request + api_key));
+    LOG_INFO("ok7");
 
     // pull out all ROUTES
     request =
@@ -850,6 +931,7 @@ void fetch_tiles(const ptree& pt,
             pt);
     std::unordered_map<std::string, size_t> routes;
     request = *request + import_level;
+    LOG_INFO("ok8");
 
     do {
       // grab some stuff
@@ -861,6 +943,7 @@ void fetch_tiles(const ptree& pt,
       // please sir may i have some more?
       request = response.get_optional<std::string>("meta.next");
     } while (request && (request = *request + api_key));
+    LOG_INFO("ok9");
 
     // pull out all the route_stop_patterns or shapes
     std::unordered_map<std::string, size_t> shapes;
@@ -870,15 +953,21 @@ void fetch_tiles(const ptree& pt,
                      pt.get<std::string>("per_page") % url_encode(route.first))
                         .str(),
                     pt);
+      LOG_INFO(request.value());
       do {
         // grab some stuff
         response = curler(*request, "route_stop_patterns");
+        LOG_INFO(request.value());
+        LOG_INFO("response ok");
         // copy shapes in.
         get_stop_patterns(tile, shapes, response);
+        LOG_INFO(request.value());
+        LOG_INFO("get stop patterns ok");
         // please sir may i have some more?
         request = response.get_optional<std::string>("meta.next");
       } while (request && (request = *request + api_key));
     }
+    LOG_INFO("ok10");
 
     // pull out all SCHEDULE_STOP_PAIRS
     bool dangles = false;
@@ -909,16 +998,19 @@ void fetch_tiles(const ptree& pt,
         request = response.get_optional<std::string>("meta.next");
       } while (request && (request = *request + api_key));
     }
+    LOG_INFO("ok11");
 
     // remember who dangles
     if (dangles) {
       dangling.emplace_back(current);
     }
+    LOG_INFO("ok12");
 
     // save the last tile
     if (tile.stop_pairs_size()) {
       write_pbf(tile, transit_tile.string());
     }
+    LOG_INFO("exit while");
   }
 
   // give back the work for later
@@ -929,6 +1021,8 @@ std::list<GraphId> fetch(const ptree& pt,
                          std::priority_queue<weighted_tile_t>& tiles,
                          unsigned int thread_count = std::max(static_cast<unsigned int>(1),
                                                               std::thread::hardware_concurrency())) {
+  //thread_count = thread_count - 1;
+  thread_count = 6;
   LOG_INFO("Fetching " + std::to_string(tiles.size()) + " transit tiles with " +
            std::to_string(thread_count) + " threads...");
 
@@ -936,23 +1030,30 @@ std::list<GraphId> fetch(const ptree& pt,
   unique_transit_t uniques;
   std::vector<std::shared_ptr<std::thread>> threads(thread_count);
   std::vector<std::promise<std::list<GraphId>>> promises(threads.size());
+  LOG_INFO("before for 1");
   for (size_t i = 0; i < threads.size(); ++i) {
     threads[i].reset(new std::thread(fetch_tiles, std::cref(pt), std::ref(tiles), std::ref(uniques),
                                      std::ref(promises[i])));
   }
+  LOG_INFO("after for 1");
 
   // let the threads finish and get the dangling list
+  LOG_INFO("before for 2");
   for (auto& thread : threads) {
     thread->join();
   }
+  LOG_INFO("after for 2");
   std::list<GraphId> dangling;
+  LOG_INFO("before for 3");
   for (auto& promise : promises) {
     try {
       dangling.splice(dangling.end(), promise.get_future().get());
     } catch (std::exception& e) {
+      LOG_WARN(e.what());
       // TODO: throw further up the chain?
     }
   }
+  LOG_INFO("after for 3");
 
   LOG_INFO("Finished");
   return dangling;
@@ -1103,14 +1204,13 @@ void stitch(const ptree& pt,
 
 int main(int argc, char** argv) {
   if (argc < 2) {
-    std::cerr
-        << "Usage: " << std::string(argv[0])
-        << " valhalla_config transit_land_url per_page [target_directory] [bounding_box]"
-           "[transit_land_api_key] [import_level] [feed_onestop_id] [import_level] [feed_onestop_id]"
-        << std::endl;
+    std::cerr << "Usage: " << std::string(argv[0])
+              << " valhalla_config transit_land_url per_page [target_directory] [bounding_box]"
+                 "[feed_onestop_id] [import_level] [transit_land_api_key] "
+              << std::endl;
     std::cerr << "Sample: " << std::string(argv[0])
               << " conf/valhalla.json http://transit.land/ 1000 ./transit_tiles "
-                 "-122.469,37.502,-121.78,38.018 transitland-YOUR_KEY_SUFFIX 4 f-9q9-bart"
+                 "-122.469,37.502,-121.78,38.018 f-9q9-bart 4 transitland-YOUR_KEY_SUFFIX "
               << std::endl;
     return 1;
   }
@@ -1130,9 +1230,9 @@ int main(int argc, char** argv) {
     pt.get_child("mjolnir").erase("transit_bounding_box");
     pt.add("mjolnir.transit_bounding_box", std::string(argv[5]));
   }
+  std::string feed;
   if (argc > 6) {
-    pt.erase("api_key");
-    pt.add("api_key", std::string(argv[6]));
+    feed = std::string(argv[6]);
   }
   if (argc > 7) {
     pt.erase("import_level");
@@ -1142,33 +1242,46 @@ int main(int argc, char** argv) {
   // yes we want to curl
   curl_global_init(CURL_GLOBAL_DEFAULT);
 
-  std::string feed;
   if (argc > 8) {
-    feed = std::string(argv[8]);
+    pt.erase("api_key");
+    pt.add("api_key", std::string(argv[8]));
   }
 
   // go get information about what transit tiles we should be fetching
+
   auto transit_tiles = which_tiles(pt, feed);
+  LOG_INFO("step 1");
   // spawn threads to download all the tiles returning a list of
   // tiles that ended up having dangling stop pairs
   auto dangling_tiles = fetch(pt, transit_tiles);
+  LOG_INFO("step 2");
   curl_global_cleanup();
+  LOG_INFO("step 3");
 
   // figure out which transit tiles even exist
+
   boost::filesystem::recursive_directory_iterator transit_file_itr(
       pt.get<std::string>("mjolnir.transit_dir") + filesystem::path::preferred_separator +
       std::to_string(TileHierarchy::levels().rbegin()->first));
+  LOG_INFO("step 4");
+
   boost::filesystem::recursive_directory_iterator end_file_itr;
+  LOG_INFO("step 5");
   std::unordered_set<GraphId> all_tiles;
+  LOG_INFO("step 6");
   for (; transit_file_itr != end_file_itr; ++transit_file_itr) {
+    LOG_INFO("debut for");
     if (boost::filesystem::is_regular(transit_file_itr->path()) &&
         transit_file_itr->path().extension() == ".pbf") {
       all_tiles.emplace(GraphTile::GetTileId(transit_file_itr->path().string()));
     }
+    LOG_INFO("fin for");
   }
+  LOG_INFO("step 7");
 
   // spawn threads to connect dangling stop pairs to adjacent tiles' stops
   stitch(pt, all_tiles, dangling_tiles);
+  LOG_INFO("step 8");
 
   return 0;
 }

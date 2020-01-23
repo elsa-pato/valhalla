@@ -49,6 +49,8 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
   endif()
   # using GCC
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${COLOR_FLAG}")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g")
+  #set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -pedantic")
 endif()
 
 # Explicitly set the build type to Release if no other type is specified
